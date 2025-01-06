@@ -1,5 +1,5 @@
 BOT_TOKEN_API = "7932602771:AAG6xHY_Vvq5gboAhJp60qxu2H_-v4EqY4M"
 HOST = "as563747.mysql.tools"
 USER = "as563747_pilcreator"
-PASSWORD = "8KV7ct3_n*"
+PASSWORD = "8KV7ct3_n*"  
 DB = "as563747_pilcreator"
