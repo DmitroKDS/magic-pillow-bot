@@ -1,0 +1,16 @@
+torch
+torchvision
+pillow
+numpy
+typing
+scikit-image
+huggingface_hub
+aiogram
+opencv-python
+pillow_heif
+mysql-connector-python
+Flask
+'flask[async]'
+opencv-contrib-python
+kornia
+transformers
