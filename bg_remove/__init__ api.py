@@ -10,8 +10,10 @@ from gradio_client import Client, handle_file
 
 from PIL import Image
 
+from config import HF_TOKEN
 
-hf_client = Client("briaai/BRIA-RMBG-2.0", hf_token="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")
+
+hf_client = Client("briaai/BRIA-RMBG-2.0", hf_token=HF_TOKEN)
 
 async def bg_remove(img_path: str) -> list[tuple[Image.Image, str]]:
     logging.info(f'Removing background {img_path}')
