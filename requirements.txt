@@ -4,5 +4,4 @@ pillow
 numpy
 aiogram
 pillow_heif
-kornia
 transformers
