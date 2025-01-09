@@ -10,7 +10,7 @@ opencv-python
 pillow_heif
 mysql-connector-python
 Flask
-'flask[async]'
+flask[async]
 opencv-contrib-python
 kornia
 transformers
