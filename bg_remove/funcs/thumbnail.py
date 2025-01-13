@@ -1,7 +1,6 @@
 from PIL import Image
 
-
-def thumbnail(image: Image.Image, max_size: tuple[int, int]) -> Image.Image:
+async def thumbnail(image: Image.Image, max_size: tuple[int, int]) -> Image.Image:
     """
     Generate a thumbnail of an image while maintaining its aspect ratio.
 

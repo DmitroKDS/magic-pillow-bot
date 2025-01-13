@@ -21,6 +21,11 @@ from bot.functions.select_contact import select_contact
 from PIL import Image
 from bg_remove.funcs.thumbnail import thumbnail
 
+from aiogram.fsm.state import State, StatesGroup
+
+class CreatePillowStates(StatesGroup):
+    waiting_for_images = State()
+    processing = State()
 
 create_pil_handler_router = Router()
 
@@ -36,28 +41,79 @@ async def create_pil(message: types.Message | types.CallbackQuery, state: FSMCon
         message = message.message
 
     await create_log(message, "create pil")
-
+    
+    # Initialize empty image list in state
+    await state.update_data(images=[])
+    
     await message.answer(
-        """🔽 Завантаж зображення, яке потрібно надрукувати на подушці.
-
-Якість буде краща, якщо скористатися функцією завантажити, як “Файл”"""
+        """🔽 Завантажте зображення для друку на подушці.
+        
+Ви можете завантажити декілька зображень.
+Якість буде краща, якщо скористатися функцією завантажити, як "Файл" """
     )
 
-    await state.set_state(create_pil_img.is_waiting)
+    await state.set_state(CreatePillowStates.waiting_for_images)
 
+@create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), CreatePillowStates.waiting_for_images)
+async def handle_image(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    images = state_data.get('images', [])
+    
+    pillow_image_io = io.BytesIO()
+    
+    # Save image to buffer
+    if message.content_type == 'photo':
+        await message.bot.download(message.photo[-1], destination=pillow_image_io)
+        image_format = "png"
+    elif message.content_type == 'document':
+        await message.bot.download(message.document, destination=pillow_image_io)
+        image_format = message.document.file_name.split(".")[-1]
+    elif message.content_type == 'sticker':
+        await message.bot.download(message.sticker, destination=pillow_image_io)
+        image_format = "webp"
+    
+    if image_format not in ["png", "jpg", "jpeg", "webp", "heic"]:
+        await message.answer("❌ Будь ласка, завантажте файл у форматі JPG, PNG або JPEG")
+        return
+    
+    images.append(pillow_image_io)
+    await state.update_data(images=images)
+    
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text='➕ Додати ще фото', callback_data='add_more_images')],
+            [types.InlineKeyboardButton(text='✅ Завершити і обробити', callback_data='process_images')]
+        ]
+    )
+    
+    await message.answer(
+        f"✨ Завантажено {len(images)} фото. Бажаєте додати ще?",
+        reply_markup=keyboard
+    )
+
+@create_pil_handler_router.callback_query(F.data == 'process_images')
+async def process_images(callback: types.CallbackQuery, state: FSMContext):
+    state_data = await state.get_data()
+    images = state_data.get('images', [])
+    
+    await callback.message.answer(f"⏳ Обробляємо {len(images)} зображень...")
+    
+    for idx, image_io in enumerate(images):
+        # Process each image similar to original create_pil_operation
+        await create_pil_operation(image_io, callback.message, state, idx + 1)
 
 @create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), create_pil_img.is_waiting)
-async def create_pil_operation(message: types.Message, state: FSMContext):
+async def create_pil_operation(image_io, message: types.Message, state: FSMContext, idx: int):
     """
     Handle user image and return image without background
 
     Handle: image or document
     """
-    await create_log(message, "create pil operation")
+    await create_log(message, f"create pil operation {idx}")
 
     contact_id = message.chat.id
 
-    pillow_image_io = io.BytesIO()
+    pillow_image_io = image_io
     image_format="png"
     
     if message.content_type == 'photo':
@@ -285,6 +341,7 @@ async def other(callback_query: types.CallbackQuery):
     else:
         await callback_query.message.answer(
             f"""Я передам скаргу дизайнеру {contact[0]} (+{contact[1]}) 🖌️, і він усе перегляне та постарається знайти рішення для вас. 😉
+
 
 📅 Наш графік роботи:
 Понеділок – п’ятниця: 09:00 – 18:00
