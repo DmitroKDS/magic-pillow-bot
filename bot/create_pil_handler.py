@@ -23,6 +23,10 @@ from bg_remove.funcs.thumbnail import thumbnail
 
 from aiogram.fsm.state import State, StatesGroup
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 class CreatePillowStates(StatesGroup):
     waiting_for_images = State()
     processing = State()
@@ -140,6 +144,7 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
                         request_id
                     )
                 )
+                logging.info(f"Inserted request into DB: contact_id={contact_id}, request_id={request_id}")
             db_connector.commit()
 
         request_id_str = str(request_id).zfill(8)
@@ -151,29 +156,30 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
 Наш розумний ШІ 🤖 вже аналізує зображення 🖼️ та видаляє фон 🌟!"""
         )
 
+        logging.info("Sent message to user")
 
         got_img = Image.open(pillow_image_io)
+        logging.info("Opened image")
 
-        got_img = await asyncio.to_thread( thumbnail, got_img, (1200, 1200) )
+        await process_image_in_chunks(got_img, (300, 300))
+        logging.info("Processed image in chunks")
 
         got_img_path = f"data/got_img/{request_id}.png"
-
         await asyncio.to_thread(got_img.save, got_img_path)
+        logging.info(f"Saved got_img to {got_img_path}")
 
-        
         await create_log(message, "got img saved")
 
-
         result = await bg_remove(got_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
-        # result = await bg_remove(f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
+        logging.info("Background removed")
 
         no_bg_img, no_bg_img_path = result[0]
         pil_effect_img, pil_effect_img_path = result[1]
 
         await asyncio.to_thread(no_bg_img.save, no_bg_img_path)
+        logging.info(f"Saved no_bg_img to {no_bg_img_path}")
 
         await create_log(message, "no bg img saved")
-
 
         await asyncio.to_thread(pil_effect_img.save, pil_effect_img_path)
 
@@ -358,7 +364,7 @@ async def other(callback_query: types.CallbackQuery):
     contact_id = callback_query.message.chat.id
 
     async with await connect(host=config.HOST, user=config.USER, password=config.PASSWORD, database=config.DB) as db_connector:
-        async with await db_connector.cursor() as db_cursor:
+        async with await db_cursor.cursor() as db_cursor:
             await db_cursor.execute("SELECT request_id FROM requests WHERE contact_id = %s ORDER BY request_id DESC LIMIT 1;",
                 (
                     contact_id,
@@ -405,3 +411,17 @@ async def your_mind(callback_query: types.CallbackQuery):
         """Чи все подобається вам в результаті?""",
         reply_markup=inline_buttons
     )
+
+async def process_image_in_chunks(image, chunk_size=(300, 300)):
+    width, height = image.size
+    for x in range(0, width, chunk_size[0]):
+        for y in range(0, height, chunk_size[1]):
+            box = (x, y, x + chunk_size[0], y + chunk_size[1])
+            chunk = image.crop(box)
+            # Process the chunk (e.g., apply thumbnail, save, etc.)
+            chunk = await asyncio.to_thread(thumbnail, chunk, chunk_size)
+            chunk_path = f"data/got_img/chunk_{x}_{y}.png"
+            await asyncio.to_thread(chunk.save, chunk_path)
+            logging.info(f"Processed and saved chunk at {chunk_path}")
+            # Release memory
+            del chunk
