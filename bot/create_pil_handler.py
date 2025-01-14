@@ -98,9 +98,18 @@ async def handle_image(message: types.Message, state: FSMContext):
         images_to_process = [pillow_image_io]
 
     if images_to_process:
-        await message.answer(f"⏳ Обробляємо {len(images_to_process)} зображень...")
+        # Add Ukrainian waiting message
+        image_count = len(images_to_process)
+        plural_form = "зображення" if image_count == 1 else "зображень"
+        await message.answer(
+            f"""✨ Чудово! Ми отримали {image_count} {plural_form}.
+
+⏳ Будь ласка, зачекайте приблизно 5 хвилин.
+🤖 Наш штучний інтелект аналізує та обробляє ваші зображення.
+🎨 Ми видаляємо фон та готуємо дизайн для вашої подушки."""
+        )
         
-        # Process all images concurrently
+        # Continue with processing
         tasks = [
             create_pil_operation(img, message, state, idx + 1) 
             for idx, img in enumerate(images_to_process)
