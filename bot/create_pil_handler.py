@@ -112,19 +112,17 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
     await create_log(message, f"create pil operation {idx}")
 
     contact_id = message.chat.id
-
     pillow_image_io = image_io
-    image_format="png"
+    image_format = "png"
     
     if message.content_type == 'photo':
         await message.bot.download(message.photo[-1], destination=pillow_image_io)
-    elif message.content_type in 'document':
+    elif message.content_type == 'document':
         await message.bot.download(message.document, destination=pillow_image_io)
         image_format = message.document.file_name.split(".")[-1]
     elif message.content_type == 'sticker':
         await message.bot.download(message.sticker, destination=pillow_image_io)
         image_format = "webp"
-
 
     if image_format in ["png", "jpg", "jpeg", "webp", "heic"]:    
         with mysql.connector.connect(host=config.HOST, user=config.USER, password=config.PASSWORD, database=config.DB) as db_connector:
@@ -133,10 +131,7 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
                 request_id = db_cursor.fetchone()[0]+1
                 
                 db_cursor.execute("INSERT INTO requests(contact_id, request_id) VALUES (%s, %s)",
-                    (
-                        contact_id,
-                        request_id
-                    )
+                    (contact_id, request_id)
                 )
             db_connector.commit()
 
@@ -149,39 +144,31 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
 Наш розумний ШІ 🤖 вже аналізує зображення 🖼️ та видаляє фон 🌟!"""
         )
 
-
         got_img = Image.open(pillow_image_io)
-
-        got_img = await asyncio.to_thread( thumbnail, got_img, (1200, 1200) )
-
-        got_img_path = f"data/got_img/{request_id}.png"
-
-        await asyncio.to_thread(got_img.save, got_img_path)
-
         
+        # Fix 1: Properly await the thumbnail coroutine
+        thumbnailed_img = await thumbnail(got_img, (1200, 1200))
+        got_img_path = f"data/got_img/{request_id}.png"
+        
+        # Fix 2: Save the thumbnailed image directly
+        thumbnailed_img.save(got_img_path)
         await create_log(message, "got img saved")
 
-
-        result = await bg_remove(got_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
-        # result = await bg_remove(f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
-
+        result = await bg_remove(thumbnailed_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
         no_bg_img, no_bg_img_path = result[0]
         pil_effect_img, pil_effect_img_path = result[1]
 
-        await asyncio.to_thread(no_bg_img.save, no_bg_img_path)
-
+        # Fix 3: Save images directly without asyncio.to_thread since PIL's save is synchronous
+        no_bg_img.save(no_bg_img_path)
         await create_log(message, "no bg img saved")
 
-
-        await asyncio.to_thread(pil_effect_img.save, pil_effect_img_path)
-
+        pil_effect_img.save(pil_effect_img_path)
         await create_log(message, "pil effect img saved")
 
-
-        preview_img = await asyncio.to_thread( thumbnail, pil_effect_img, (600, 600) )
-
+        # Fix 4: Properly await the preview thumbnail
+        preview_img = await thumbnail(pil_effect_img, (600, 600))
         preview_img_bytes = io.BytesIO()
-        await asyncio.to_thread(preview_img.save, preview_img_bytes, format='PNG')
+        preview_img.save(preview_img_bytes, format='PNG')
         preview_img_bytes.seek(0)
 
         await message.answer_photo(
