@@ -39,24 +39,21 @@ async def bg_remove(img: Image.Image, img_path: str) -> list[tuple[Image.Image, 
     no_bg_img = img.copy()
     no_bg_img.putalpha(no_bg_mask)
 
-    no_bg_img = await asyncio.to_thread(lambda: no_bg_img.crop(no_bg_img.getbbox()))
-
-    no_bg_img = await asyncio.to_thread(lambda: thumbnail(no_bg_img, (4000, 4000)))
+    no_bg_img = no_bg_img.crop(no_bg_img.getbbox())
+    no_bg_img = thumbnail(no_bg_img, (4000, 4000))
 
     logging.info(f'Background removed {img_path}')
-
 
     img_name = img_path.split('/')[-1]
     no_bg_img_path = f"data/no_bg/{img_name}"
 
     logging.info(f'No bg image saved {no_bg_img_path}')
 
-
-    pil_effect_img = await asyncio.to_thread( pil_effect, no_bg_img )
+    # Use synchronous pil_effect
+    pil_effect_img = pil_effect(no_bg_img)
     pil_effect_img_path = f"data/pil_effect/{img_name}"
 
     logging.info(f'Pil effect image saved {no_bg_img_path}')
-
 
     return [
         (no_bg_img, no_bg_img_path),

@@ -147,7 +147,7 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
         got_img = Image.open(pillow_image_io)
         
         # Fix 1: Properly await the thumbnail coroutine
-        thumbnailed_img = await thumbnail(got_img, (1200, 1200))
+        thumbnailed_img = thumbnail(got_img, (1200, 1200))
         got_img_path = f"data/got_img/{request_id}.png"
         
         # Fix 2: Save the thumbnailed image directly
