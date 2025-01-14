@@ -42,6 +42,9 @@ async def create_pil(message: types.Message | types.CallbackQuery, state: FSMCon
 
     await create_log(message, "create pil")
     
+    # Initialize empty image list in state
+    await state.update_data(images=[])
+    
     await message.answer(
         """🔽 Завантажте зображення для друку на подушці.
         
@@ -51,121 +54,57 @@ async def create_pil(message: types.Message | types.CallbackQuery, state: FSMCon
 
     await state.set_state(CreatePillowStates.waiting_for_images)
 
-ALLOWED_FORMATS = {'png', 'jpg', 'jpeg', 'webp', 'heic'}
-
-@create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), create_pil_img.is_waiting)
+@create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), CreatePillowStates.waiting_for_images)
 async def handle_image(message: types.Message, state: FSMContext):
-    """Handle incoming images and prepare them for processing"""
-    async def validate_image(img_io) -> tuple[bool, str]:
-        try:
-            img_io.seek(0)
-            with Image.open(img_io) as img:
-                return True, ""
-        except Exception:
-            return False, "Неправильний формат файлу"
-
-    images_to_validate = []
-    
-    if message.media_group_id:
-        state_data = await state.get_data()
-        media_key = f'media_{message.media_group_id}'
-        media_dict = state_data.get(media_key, {'images': [], 'processed': False})
-        
-        if media_dict['processed']:
-            return
-            
-        img_io = io.BytesIO()
-        if message.content_type == 'photo':
-            await message.bot.download(message.photo[-1], destination=img_io)
-        elif message.content_type == 'document':
-            await message.bot.download(message.document, destination=img_io)
-            
-        is_valid, error_msg = await validate_image(img_io)
-        if not is_valid:
-            await message.answer(f"⚠️ {error_msg}")
-            return
-            
-        media_dict['images'].append(img_io)
-        await state.update_data({media_key: media_dict})
-        
-        await asyncio.sleep(0.5)
-        media_dict = (await state.get_data())[media_key]
-        if len(media_dict['images']) < len(message.media_group):
-            return
-            
-        images_to_validate = media_dict['images']
-        media_dict['processed'] = True
-        await state.update_data({media_key: media_dict})
-    else:
-        img_io = io.BytesIO()
-        if message.content_type == 'photo':
-            await message.bot.download(message.photo[-1], destination=img_io)
-        elif message.content_type == 'document':
-            await message.bot.download(message.document, destination=img_io)
-        elif message.content_type == 'sticker':
-            await message.bot.download(message.sticker, destination=img_io)
-            
-        is_valid, error_msg = await validate_image(img_io)
-        if not is_valid:
-            await message.answer(f"⚠️ {error_msg}")
-            return
-            
-        images_to_validate = [img_io]
-
-    if images_to_validate:
-        image_count = len(images_to_validate)
-        await state.update_data(pending_images=images_to_validate)
-        
-        confirm_keyboard = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [types.InlineKeyboardButton(text="✅ Так, обробити", callback_data="process_images")],
-                [types.InlineKeyboardButton(text="❌ Ні, завантажити інші", callback_data="create_pil")]
-            ]
-        )
-        
-        plural_form = "зображення" if image_count == 1 else "зображень"
-        await message.answer(
-            f"📸 Отримано {image_count} {plural_form}. Почати обробку?",
-            reply_markup=confirm_keyboard
-        )
-
-@create_pil_handler_router.callback_query(F.data == "process_images")
-async def process_images(callback: types.CallbackQuery, state: FSMContext):
     state_data = await state.get_data()
-    images_to_process = state_data.get('pending_images', [])
+    images = state_data.get('images', [])
     
-    if not images_to_process:
-        await callback.message.answer("❌ Не знайдено зображень для обробки")
+    pillow_image_io = io.BytesIO()
+    
+    # Save image to buffer
+    if message.content_type == 'photo':
+        await message.bot.download(message.photo[-1], destination=pillow_image_io)
+        image_format = "png"
+    elif message.content_type == 'document':
+        await message.bot.download(message.document, destination=pillow_image_io)
+        image_format = message.document.file_name.split(".")[-1]
+    elif message.content_type == 'sticker':
+        await message.bot.download(message.sticker, destination=pillow_image_io)
+        image_format = "webp"
+    
+    if image_format not in ["png", "jpg", "jpeg", "webp", "heic"]:
+        await message.answer("❌ Будь ласка, завантажте файл у форматі JPG, PNG або JPEG")
         return
-        
-    await callback.message.answer(
-        "⏳ Починаємо обробку зображень...\n"
-        "🤖 Це може зайняти кілька хвилин"
+    
+    images.append(pillow_image_io)
+    await state.update_data(images=images)
+    
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text='➕ Додати ще фото', callback_data='add_more_images')],
+            [types.InlineKeyboardButton(text='✅ Завершити і обробити', callback_data='process_images')]
+        ]
     )
     
+    await message.answer(
+        f"✨ Завантажено {len(images)} фото. Бажаєте додати ще?",
+        reply_markup=keyboard
+    )
+
+@create_pil_handler_router.callback_query(F.data == 'process_images')
+async def process_images(callback: types.CallbackQuery, state: FSMContext):
+    state_data = await state.get_data()
+    images = state_data.get('images', [])
+    
+    await callback.message.answer(f"⏳ Обробляємо {len(images)} зображень...")
+    
     tasks = [
-        create_pil_operation(img, callback.message, state, idx + 1) 
-        for idx, img in enumerate(images_to_process)
+        create_pil_operation(image_io, callback.message, state, idx + 1)
+        for idx, image_io in enumerate(images)
     ]
     
-    try:
-        results = await asyncio.gather(*tasks)
-        for result in results:
-            preview_img_bytes, inline_buttons = result
-            await callback.message.answer_photo(
-                types.BufferedInputFile(
-                    preview_img_bytes.read(),
-                    filename="preview.png"
-                ),
-                reply_markup=inline_buttons
-            )
-    except Exception as e:
-        await callback.message.answer(
-            "❌ Виникла помилка під час обробки. Спробуйте ще раз або зверніться до підтримки."
-        )
-        print(f"Error processing images: {e}")
-
-# Modify create_pil_operation to return the processed image data
+    await asyncio.gather(*tasks)
+@create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), create_pil_img.is_waiting)
 async def create_pil_operation(image_io, message: types.Message, state: FSMContext, idx: int):
     """
     Handle user image and return image without background
@@ -175,17 +114,19 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
     await create_log(message, f"create pil operation {idx}")
 
     contact_id = message.chat.id
+
     pillow_image_io = image_io
-    image_format = "png"
+    image_format="png"
     
     if message.content_type == 'photo':
         await message.bot.download(message.photo[-1], destination=pillow_image_io)
-    elif message.content_type == 'document':
+    elif message.content_type in 'document':
         await message.bot.download(message.document, destination=pillow_image_io)
         image_format = message.document.file_name.split(".")[-1]
     elif message.content_type == 'sticker':
         await message.bot.download(message.sticker, destination=pillow_image_io)
         image_format = "webp"
+
 
     if image_format in ["png", "jpg", "jpeg", "webp", "heic"]:    
         with mysql.connector.connect(host=config.HOST, user=config.USER, password=config.PASSWORD, database=config.DB) as db_connector:
@@ -194,7 +135,10 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
                 request_id = db_cursor.fetchone()[0]+1
                 
                 db_cursor.execute("INSERT INTO requests(contact_id, request_id) VALUES (%s, %s)",
-                    (contact_id, request_id)
+                    (
+                        contact_id,
+                        request_id
+                    )
                 )
             db_connector.commit()
 
@@ -207,32 +151,49 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
 Наш розумний ШІ 🤖 вже аналізує зображення 🖼️ та видаляє фон 🌟!"""
         )
 
+
         got_img = Image.open(pillow_image_io)
-        
-        # Fix 1: Properly await the thumbnail coroutine
-        thumbnailed_img = thumbnail(got_img, (1200, 1200))
+
+        got_img = await asyncio.to_thread( thumbnail, got_img, (1200, 1200) )
+
         got_img_path = f"data/got_img/{request_id}.png"
+
+        await asyncio.to_thread(got_img.save, got_img_path)
+
         
-        # Fix 2: Save the thumbnailed image directly
-        thumbnailed_img.save(got_img_path)
         await create_log(message, "got img saved")
 
-        result = await bg_remove(thumbnailed_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
+
+        result = await bg_remove(got_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
+        # result = await bg_remove(f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
+
         no_bg_img, no_bg_img_path = result[0]
         pil_effect_img, pil_effect_img_path = result[1]
 
-        # Fix 3: Save images directly without asyncio.to_thread since PIL's save is synchronous
-        no_bg_img.save(no_bg_img_path)
+        await asyncio.to_thread(no_bg_img.save, no_bg_img_path)
+
         await create_log(message, "no bg img saved")
 
-        pil_effect_img.save(pil_effect_img_path)
+
+        await asyncio.to_thread(pil_effect_img.save, pil_effect_img_path)
+
         await create_log(message, "pil effect img saved")
 
-        # Fix 4: Properly await the preview thumbnail
-        preview_img = thumbnail(pil_effect_img, (600, 600))
+
+        preview_img = await asyncio.to_thread( thumbnail, pil_effect_img, (600, 600) )
+
         preview_img_bytes = io.BytesIO()
-        preview_img.save(preview_img_bytes, format='PNG')
+        await asyncio.to_thread(preview_img.save, preview_img_bytes, format='PNG')
         preview_img_bytes.seek(0)
+
+        await message.answer_photo(
+            types.BufferedInputFile(
+                preview_img_bytes.read(),
+                filename=f"{request_id}_preview.png"
+            )
+        )
+
+        await create_log(message, "preview photo sent")
 
         inline_buttons = types.InlineKeyboardMarkup(
             inline_keyboard=[
@@ -242,10 +203,16 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
             ]
         )
 
-        await create_log(message, "preview photo sent")
+        await message.answer(
+            """🏆 Ось, що вийшло після видалення фону.
 
-        # Return the processed image data instead of sending it
-        return preview_img_bytes, inline_buttons
+❔Чи подобається такий результат результат?
+
+ℹ️ Чорна лінія то є відображення контуру подушки на готовій подушці їх не буде.""",
+            reply_markup=inline_buttons
+        )
+
+        await state.clear()
     else:
         await message.answer(
         """📂 Ой, щось пішло не так! Ви завантажили файл у форматі, який ми, на жаль, не можемо обробити. 😔
