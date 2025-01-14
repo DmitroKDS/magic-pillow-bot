@@ -51,81 +51,119 @@ async def create_pil(message: types.Message | types.CallbackQuery, state: FSMCon
 
     await state.set_state(CreatePillowStates.waiting_for_images)
 
+ALLOWED_FORMATS = {'png', 'jpg', 'jpeg', 'webp', 'heic'}
+
 @create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), create_pil_img.is_waiting)
 async def handle_image(message: types.Message, state: FSMContext):
-    images_to_process = []
+    """Handle incoming images and prepare them for processing"""
+    async def validate_image(img_io) -> tuple[bool, str]:
+        try:
+            img_io.seek(0)
+            with Image.open(img_io) as img:
+                return True, ""
+        except Exception:
+            return False, "Неправильний формат файлу"
+
+    images_to_validate = []
     
-    # If it's an album/media group
     if message.media_group_id:
-        media_group = message.media_group_id
         state_data = await state.get_data()
-        media_dict = state_data.get(f'media_{media_group}', {'images': [], 'processed': False})
+        media_key = f'media_{message.media_group_id}'
+        media_dict = state_data.get(media_key, {'images': [], 'processed': False})
         
         if media_dict['processed']:
             return
             
-        pillow_image_io = io.BytesIO()
+        img_io = io.BytesIO()
         if message.content_type == 'photo':
-            await message.bot.download(message.photo[-1], destination=pillow_image_io)
-            image_format = "png"
+            await message.bot.download(message.photo[-1], destination=img_io)
         elif message.content_type == 'document':
-            await message.bot.download(message.document, destination=pillow_image_io)
-            image_format = message.document.file_name.split(".")[-1]
+            await message.bot.download(message.document, destination=img_io)
+            
+        is_valid, error_msg = await validate_image(img_io)
+        if not is_valid:
+            await message.answer(f"⚠️ {error_msg}")
+            return
+            
+        media_dict['images'].append(img_io)
+        await state.update_data({media_key: media_dict})
         
-        if image_format in ["png", "jpg", "jpeg", "webp", "heic"]:
-            media_dict['images'].append(pillow_image_io)
-            await state.update_data({f'media_{media_group}': media_dict})
+        await asyncio.sleep(0.5)
+        media_dict = (await state.get_data())[media_key]
+        if len(media_dict['images']) < len(message.media_group):
+            return
             
-            # Wait for all media group images before processing
-            await asyncio.sleep(1)
-            media_dict = (await state.get_data())[f'media_{media_group}']
-            if len(media_dict['images']) < len(message.media_group):
-                return
-                
-            images_to_process = media_dict['images']
-            media_dict['processed'] = True
-            await state.update_data({f'media_{media_group}': media_dict})
+        images_to_validate = media_dict['images']
+        media_dict['processed'] = True
+        await state.update_data({media_key: media_dict})
     else:
-        # Single image processing
-        pillow_image_io = io.BytesIO()
+        img_io = io.BytesIO()
         if message.content_type == 'photo':
-            await message.bot.download(message.photo[-1], destination=pillow_image_io)
+            await message.bot.download(message.photo[-1], destination=img_io)
         elif message.content_type == 'document':
-            await message.bot.download(message.document, destination=pillow_image_io)
+            await message.bot.download(message.document, destination=img_io)
         elif message.content_type == 'sticker':
-            await message.bot.download(message.sticker, destination=pillow_image_io)
+            await message.bot.download(message.sticker, destination=img_io)
             
-        images_to_process = [pillow_image_io]
+        is_valid, error_msg = await validate_image(img_io)
+        if not is_valid:
+            await message.answer(f"⚠️ {error_msg}")
+            return
+            
+        images_to_validate = [img_io]
 
-    if images_to_process:
-        # Add Ukrainian waiting message
-        image_count = len(images_to_process)
-        plural_form = "зображення" if image_count == 1 else "зображень"
-        await message.answer(
-            f"""✨ Чудово! Ми отримали {image_count} {plural_form}.
-
-⏳ Будь ласка, зачекайте приблизно 5 хвилин.
-🤖 Наш штучний інтелект аналізує та обробляє ваші зображення.
-🎨 Ми видаляємо фон та готуємо дизайн для вашої подушки."""
+    if images_to_validate:
+        image_count = len(images_to_validate)
+        await state.update_data(pending_images=images_to_validate)
+        
+        confirm_keyboard = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="✅ Так, обробити", callback_data="process_images")],
+                [types.InlineKeyboardButton(text="❌ Ні, завантажити інші", callback_data="create_pil")]
+            ]
         )
         
-        # Continue with processing
-        tasks = [
-            create_pil_operation(img, message, state, idx + 1) 
-            for idx, img in enumerate(images_to_process)
-        ]
-        results = await asyncio.gather(*tasks)
+        plural_form = "зображення" if image_count == 1 else "зображень"
+        await message.answer(
+            f"📸 Отримано {image_count} {plural_form}. Почати обробку?",
+            reply_markup=confirm_keyboard
+        )
 
-        # Send all processed images
+@create_pil_handler_router.callback_query(F.data == "process_images")
+async def process_images(callback: types.CallbackQuery, state: FSMContext):
+    state_data = await state.get_data()
+    images_to_process = state_data.get('pending_images', [])
+    
+    if not images_to_process:
+        await callback.message.answer("❌ Не знайдено зображень для обробки")
+        return
+        
+    await callback.message.answer(
+        "⏳ Починаємо обробку зображень...\n"
+        "🤖 Це може зайняти кілька хвилин"
+    )
+    
+    tasks = [
+        create_pil_operation(img, callback.message, state, idx + 1) 
+        for idx, img in enumerate(images_to_process)
+    ]
+    
+    try:
+        results = await asyncio.gather(*tasks)
         for result in results:
             preview_img_bytes, inline_buttons = result
-            await message.answer_photo(
+            await callback.message.answer_photo(
                 types.BufferedInputFile(
                     preview_img_bytes.read(),
                     filename="preview.png"
                 ),
                 reply_markup=inline_buttons
             )
+    except Exception as e:
+        await callback.message.answer(
+            "❌ Виникла помилка під час обробки. Спробуйте ще раз або зверніться до підтримки."
+        )
+        print(f"Error processing images: {e}")
 
 # Modify create_pil_operation to return the processed image data
 async def create_pil_operation(image_io, message: types.Message, state: FSMContext, idx: int):
