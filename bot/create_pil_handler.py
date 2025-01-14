@@ -166,7 +166,7 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
         await create_log(message, "pil effect img saved")
 
         # Fix 4: Properly await the preview thumbnail
-        preview_img = await thumbnail(pil_effect_img, (600, 600))
+        preview_img = thumbnail(pil_effect_img, (600, 600))
         preview_img_bytes = io.BytesIO()
         preview_img.save(preview_img_bytes, format='PNG')
         preview_img_bytes.seek(0)
