@@ -1,29 +1,18 @@
-from aiogram import Router, types, F
-
-from bot.functions.create_log import create_log
-from bot.functions.get_work_time import get_work_time
-
-from aiogram.fsm.context import FSMContext
-from bot.functions.bot_states import create_pil_img
-
+import logging
+from PIL import Image
+import asyncio
 import io
-
+from aiogram import Router, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from bg_remove import bg_remove
-
+from bg_remove.funcs.thumbnail import thumbnail
 from mysql.connector.aio import connect
 import mysql.connector
 import config
-
-import asyncio
-
+from bot.functions.create_log import create_log
+from bot.functions.get_work_time import get_work_time
 from bot.functions.select_contact import select_contact
-
-from PIL import Image
-from bg_remove.funcs.thumbnail import thumbnail
-
-from aiogram.fsm.state import State, StatesGroup
-
-import logging
 
 logging.basicConfig(level=logging.INFO)
 
@@ -107,8 +96,12 @@ async def process_images(callback: types.CallbackQuery, state: FSMContext):
         for idx, image_io in enumerate(images)
     ]
     
-    await asyncio.gather(*tasks)
-@create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), create_pil_img.is_waiting)
+    results = await asyncio.gather(*tasks)
+    
+    # Send back only the first processed image
+    first_result = results[0]
+    await send_processed_image(callback.message, first_result)
+
 async def create_pil_operation(image_io, message: types.Message, state: FSMContext, idx: int):
     """
     Handle user image and return image without background
@@ -122,111 +115,82 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
     pillow_image_io = image_io
     image_format="png"
     
-    if message.content_type == 'photo':
-        await message.bot.download(message.photo[-1], destination=pillow_image_io)
-    elif message.content_type in 'document':
-        await message.bot.download(message.document, destination=pillow_image_io)
-        image_format = message.document.file_name.split(".")[-1]
-    elif message.content_type == 'sticker':
-        await message.bot.download(message.sticker, destination=pillow_image_io)
-        image_format = "webp"
+    got_img = Image.open(pillow_image_io)
+    logging.info("Opened image")
+
+    await process_image_in_chunks(got_img, (300, 300))
+    logging.info("Processed image in chunks")
+
+    got_img_path = f"data/got_img/{contact_id}_{idx}.png"
+    await asyncio.to_thread(got_img.save, got_img_path)
+    logging.info(f"Saved got_img to {got_img_path}")
+
+    await create_log(message, "got img saved")
+
+    result = await bg_remove(got_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
+    logging.info("Background removed")
+
+    no_bg_img, no_bg_img_path = result[0]
+    pil_effect_img, pil_effect_img_path = result[1]
+
+    await asyncio.to_thread(no_bg_img.save, no_bg_img_path)
+    logging.info(f"Saved no_bg_img to {no_bg_img_path}")
+
+    await create_log(message, "no bg img saved")
+
+    await asyncio.to_thread(pil_effect_img.save, pil_effect_img_path)
+
+    await create_log(message, "pil effect img saved")
 
 
-    if image_format in ["png", "jpg", "jpeg", "webp", "heic"]:    
-        with mysql.connector.connect(host=config.HOST, user=config.USER, password=config.PASSWORD, database=config.DB) as db_connector:
-            with db_connector.cursor() as db_cursor:
-                db_cursor.execute("SELECT COUNT(*) FROM requests")
-                request_id = db_cursor.fetchone()[0]+1
-                
-                db_cursor.execute("INSERT INTO requests(contact_id, request_id) VALUES (%s, %s)",
-                    (
-                        contact_id,
-                        request_id
-                    )
-                )
-                logging.info(f"Inserted request into DB: contact_id={contact_id}, request_id={request_id}")
-            db_connector.commit()
+    preview_img = await asyncio.to_thread( thumbnail, pil_effect_img, (600, 600) )
 
-        request_id_str = str(request_id).zfill(8)
+    preview_img_bytes = io.BytesIO()
+    await asyncio.to_thread(preview_img.save, preview_img_bytes, format='PNG')
+    preview_img_bytes.seek(0)
 
-        await message.answer(
-            f"""Твоя заявка №{request_id_str}.
+    return preview_img_bytes
 
-✨ Чудово! Потрібно зачекати від 1 до 5 хвилин ⏳.
-Наш розумний ШІ 🤖 вже аналізує зображення 🖼️ та видаляє фон 🌟!"""
+async def send_processed_image(message: types.Message, preview_img_bytes: io.BytesIO):
+    await message.answer_photo(
+        types.BufferedInputFile(
+            preview_img_bytes.read(),
+            filename="preview.png"
         )
+    )
 
-        logging.info("Sent message to user")
+    await create_log(message, "preview photo sent")
 
-        got_img = Image.open(pillow_image_io)
-        logging.info("Opened image")
+    inline_buttons = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text='✅ Так, все чудово. Продовжити замовлення', callback_data='order_pil')],
+            [types.InlineKeyboardButton(text='❌ Ні, щось не подобається. Підключити підтримку', callback_data='do_not_like_pil')],
+            [types.InlineKeyboardButton(text='🆕 Хочу завантажити інше фото', callback_data='create_pil')]
+        ]
+    )
 
-        await process_image_in_chunks(got_img, (300, 300))
-        logging.info("Processed image in chunks")
-
-        got_img_path = f"data/got_img/{request_id}.png"
-        await asyncio.to_thread(got_img.save, got_img_path)
-        logging.info(f"Saved got_img to {got_img_path}")
-
-        await create_log(message, "got img saved")
-
-        result = await bg_remove(got_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
-        logging.info("Background removed")
-
-        no_bg_img, no_bg_img_path = result[0]
-        pil_effect_img, pil_effect_img_path = result[1]
-
-        await asyncio.to_thread(no_bg_img.save, no_bg_img_path)
-        logging.info(f"Saved no_bg_img to {no_bg_img_path}")
-
-        await create_log(message, "no bg img saved")
-
-        await asyncio.to_thread(pil_effect_img.save, pil_effect_img_path)
-
-        await create_log(message, "pil effect img saved")
-
-
-        preview_img = await asyncio.to_thread( thumbnail, pil_effect_img, (600, 600) )
-
-        preview_img_bytes = io.BytesIO()
-        await asyncio.to_thread(preview_img.save, preview_img_bytes, format='PNG')
-        preview_img_bytes.seek(0)
-
-        await message.answer_photo(
-            types.BufferedInputFile(
-                preview_img_bytes.read(),
-                filename=f"{request_id}_preview.png"
-            )
-        )
-
-        await create_log(message, "preview photo sent")
-
-        inline_buttons = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [types.InlineKeyboardButton(text='✅ Так, все чудово. Продовжити замовлення', callback_data='order_pil')],
-                [types.InlineKeyboardButton(text='❌ Ні, щось не подобається. Підключити підтримку', callback_data='do_not_like_pil')],
-                [types.InlineKeyboardButton(text='🆕 Хочу завантажити інше фото', callback_data='create_pil')]
-            ]
-        )
-
-        await message.answer(
-            """🏆 Ось, що вийшло після видалення фону.
+    await message.answer(
+        """🏆 Ось, що вийшло після видалення фону.
 
 ❔Чи подобається такий результат результат?
 
 ℹ️ Чорна лінія то є відображення контуру подушки на готовій подушці їх не буде.""",
-            reply_markup=inline_buttons
-        )
+        reply_markup=inline_buttons
+    )
 
-        await state.clear()
-    else:
-        await message.answer(
-        """📂 Ой, щось пішло не так! Ви завантажили файл у форматі, який ми, на жаль, не можемо обробити. 😔
-
-✅ Завантажте, будь ласка, файл у форматі JPG, PNG або JPEG – і все запрацює! 🎉
-Якщо виникнуть питання, ми завжди поруч, щоб допомогти! 😊"""
-        )
-
+async def process_image_in_chunks(image, chunk_size=(300, 300)):
+    width, height = image.size
+    for x in range(0, width, chunk_size[0]):
+        for y in range(0, height, chunk_size[1]):
+            box = (x, y, x + chunk_size[0], y + chunk_size[1])
+            chunk = image.crop(box)
+            # Process the chunk (e.g., apply thumbnail, save, etc.)
+            chunk = await asyncio.to_thread(thumbnail, chunk, chunk_size)
+            chunk_path = f"data/got_img/chunk_{x}_{y}.png"
+            await asyncio.to_thread(chunk.save, chunk_path)
+            logging.info(f"Processed and saved chunk at {chunk_path}")
+            # Release memory
+            del chunk
 
 @create_pil_handler_router.callback_query(F.data == 'do_not_like_pil')
 async def do_not_like_pil(callback_query: types.CallbackQuery, state: FSMContext):
@@ -411,17 +375,3 @@ async def your_mind(callback_query: types.CallbackQuery):
         """Чи все подобається вам в результаті?""",
         reply_markup=inline_buttons
     )
-
-async def process_image_in_chunks(image, chunk_size=(300, 300)):
-    width, height = image.size
-    for x in range(0, width, chunk_size[0]):
-        for y in range(0, height, chunk_size[1]):
-            box = (x, y, x + chunk_size[0], y + chunk_size[1])
-            chunk = image.crop(box)
-            # Process the chunk (e.g., apply thumbnail, save, etc.)
-            chunk = await asyncio.to_thread(thumbnail, chunk, chunk_size)
-            chunk_path = f"data/got_img/chunk_{x}_{y}.png"
-            await asyncio.to_thread(chunk.save, chunk_path)
-            logging.info(f"Processed and saved chunk at {chunk_path}")
-            # Release memory
-            del chunk
