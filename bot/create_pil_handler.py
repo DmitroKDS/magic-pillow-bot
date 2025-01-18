@@ -89,19 +89,43 @@ async def process_images(callback: types.CallbackQuery, state: FSMContext):
     state_data = await state.get_data()
     images = state_data.get('images', [])
     
-    await callback.message.answer(f"⏳ Обробляємо {len(images)} зображень...")
+    processing_message = await callback.message.answer(
+        f"⏳ Обробляємо {len(images)} зображень..."
+    )
     
-    tasks = [
-        create_pil_operation(image_io, callback.message, state, idx + 1)
-        for idx, image_io in enumerate(images)
-    ]
-    
-    results = await asyncio.gather(*tasks)
-    
-    # Send back only the first processed image
-    first_result = results[0]
-    await send_processed_image(callback.message, first_result)
-
+    try:
+        # Create a semaphore to limit concurrent processing
+        sem = asyncio.Semaphore(3)  # Limit to 3 concurrent operations
+        
+        async def process_with_semaphore(image_io, idx):
+            async with sem:
+                return await create_pil_operation(image_io, callback.message, state, idx + 1)
+        
+        # Process all images concurrently with semaphore
+        tasks = [
+            process_with_semaphore(image_io, idx)
+            for idx, image_io in enumerate(images)
+        ]
+        
+        # Use asyncio.gather to run all tasks concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Filter out any failed results
+        successful_results = [r for r in results if not isinstance(r, Exception)]
+        
+        if successful_results:
+            # Send back processed images
+            for result in successful_results:
+                await send_processed_image(callback.message, result)
+        else:
+            await callback.message.answer("❌ Виникла помилка при обробці зображень. Спробуйте ще раз.")
+            
+    except Exception as e:
+        logging.error(f"Error processing images: {e}")
+        await callback.message.answer("❌ Виникла помилка при обробці зображень. Спробуйте ще раз.")
+    finally:
+        await processing_message.delete()
+        
 async def create_pil_operation(image_io, message: types.Message, state: FSMContext, idx: int):
     """
     Handle user image and return image without background

@@ -29,33 +29,46 @@ image_preparator = transforms.Compose([
 
 async def bg_remove(img: Image.Image, img_path: str) -> list[tuple[Image.Image, str]]:
     logging.info(f'Removing background {img_path}')
-
-    input_images = image_preparator(img.convert('RGB')).unsqueeze(0).to(device)
-    with torch.no_grad():
-        preds = model(input_images)[-1].sigmoid().cpu()
-    pred = preds[0].squeeze()
-    pred_pil = transforms.ToPILImage()(pred)
-    no_bg_mask = pred_pil.resize(img.size)
-    no_bg_img = img.copy()
-    no_bg_img.putalpha(no_bg_mask)
-
-    no_bg_img = no_bg_img.crop(no_bg_img.getbbox())
-    no_bg_img = thumbnail(no_bg_img, (4000, 4000))
-
-    logging.info(f'Background removed {img_path}')
-
-    img_name = img_path.split('/')[-1]
-    no_bg_img_path = f"data/no_bg/{img_name}"
-
-    logging.info(f'No bg image saved {no_bg_img_path}')
-
-    # Use synchronous pil_effect
-    pil_effect_img = pil_effect(no_bg_img)
-    pil_effect_img_path = f"data/pil_effect/{img_name}"
-
-    logging.info(f'Pil effect image saved {no_bg_img_path}')
-
-    return [
-        (no_bg_img, no_bg_img_path),
-        (pil_effect_img, pil_effect_img_path)
-    ]
+    
+    try:
+        # Convert image preparation to async
+        input_images = await asyncio.to_thread(
+            lambda: image_preparator(img.convert('RGB')).unsqueeze(0).to(device)
+        )
+        
+        # Run model inference
+        async def run_inference():
+            with torch.no_grad():
+                preds = model(input_images)[-1].sigmoid().cpu()
+            return preds
+            
+        preds = await asyncio.to_thread(run_inference)
+        
+        # Process results
+        pred = preds[0].squeeze()
+        pred_pil = await asyncio.to_thread(transforms.ToPILImage(), pred)
+        no_bg_mask = await asyncio.to_thread(lambda: pred_pil.resize(img.size))
+        
+        # Create final images
+        no_bg_img = img.copy()
+        no_bg_img.putalpha(no_bg_mask)
+        no_bg_img = await asyncio.to_thread(lambda: no_bg_img.crop(no_bg_img.getbbox()))
+        no_bg_img = await asyncio.to_thread(lambda: thumbnail(no_bg_img, (4000, 4000)))
+        
+        img_name = img_path.split('/')[-1]
+        no_bg_img_path = f"data/no_bg/{img_name}"
+        
+        # Create pil effect image
+        pil_effect_img = await asyncio.to_thread(pil_effect, no_bg_img)
+        pil_effect_img_path = f"data/pil_effect/{img_name}"
+        
+        logging.info(f'Processing completed for {img_path}')
+        
+        return [
+            (no_bg_img, no_bg_img_path),
+            (pil_effect_img, pil_effect_img_path)
+        ]
+        
+    except Exception as e:
+        logging.error(f"Error in bg_remove: {e}")
+        raise
