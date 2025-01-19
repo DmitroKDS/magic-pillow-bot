@@ -196,7 +196,7 @@ async def process_image_in_chunks(image, chunk_size=(300, 300)):
             del chunk
 
 @create_pil_handler_router.callback_query(F.data == 'do_not_like_pil')
-aasync def do_not_like_pil(callback: types.CallbackQuery, state: FSMContext):
+async def do_not_like_pil(callback: types.CallbackQuery, state: FSMContext):
     await create_log(callback.message, "Do not like pil")
     
     inline_buttons = types.InlineKeyboardMarkup(
