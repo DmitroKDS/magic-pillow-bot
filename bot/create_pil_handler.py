@@ -22,31 +22,25 @@ class CreatePillowStates(StatesGroup):
 
 create_pil_handler_router = Router()
 
-@create_pil_handler_router.message(lambda message: message.text == '✨ Створити подушку')
+@create_pil_handler_router.message(F.text == '✨ Створити подушку')
 @create_pil_handler_router.callback_query(F.data == 'create_pil')
-async def create_pil(message: types.Message | types.CallbackQuery, state: FSMContext) -> None:
+async def create_pil(event: types.Message | types.CallbackQuery, state: FSMContext) -> None:
     """
     Create pillow, bot send info about creating pillow
-
-    Button: create pil
     """
-    if isinstance(message, types.CallbackQuery):
-        message = message.message
-
-    await create_log(message, "create pil")
+    message = event.message if isinstance(event, types.CallbackQuery) else event
     
-    # Initialize empty image list in state
+    await create_log(message, "create pil")
     await state.update_data(images=[])
     
     await message.answer(
-        """🔽 Завантажте зображення для друку на подушці.
-        
-Ви можете завантажити декілька зображень.
-Якість буде краща, якщо скористатися функцією завантажити, як "Файл" """
+        "🔽 Завантажте зображення для друку на подушці.\n\n"
+        "Ви можете завантажити декілька зображень.\n"
+        "Якість буде краща, якщо скористатися функцією завантажити, як \"Файл\""
     )
 
     await state.set_state(CreatePillowStates.waiting_for_images)
-
+    
 @create_pil_handler_router.message(F.content_type.in_(['photo', 'document', 'sticker']), CreatePillowStates.waiting_for_images)
 async def handle_image(message: types.Message, state: FSMContext):
     state_data = await state.get_data()
@@ -202,15 +196,9 @@ async def process_image_in_chunks(image, chunk_size=(300, 300)):
             del chunk
 
 @create_pil_handler_router.callback_query(F.data == 'do_not_like_pil')
-async def do_not_like_pil(callback_query: types.CallbackQuery, state: FSMContext):
-    """
-    In user mind pil is wrong. Bot offer a help
-
-    Button: pil not okay
-    """
-    await create_log(callback_query.message, "Do not like pil")
-
-
+aasync def do_not_like_pil(callback: types.CallbackQuery, state: FSMContext):
+    await create_log(callback.message, "Do not like pil")
+    
     inline_buttons = types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text='На макеті подушки зайвий елемент', callback_data='miss_element')],
@@ -218,23 +206,42 @@ async def do_not_like_pil(callback_query: types.CallbackQuery, state: FSMContext
             [types.InlineKeyboardButton(text='Повернутись на шаг назад', callback_data='your_mind')]
         ]
     )
-
-    await callback_query.message.answer(
-        """🤔 Що саме вам не сподобалось? Ми зробимо все, щоб ваша подушка була ТОП! 💪✨""",
+    
+    await callback.message.answer(
+        "🤔 Що саме вам не сподобалось? Ми зробимо все, щоб ваша подушка була ТОП! 💪✨",
         reply_markup=inline_buttons
     )
 
 
 @create_pil_handler_router.callback_query(F.data == 'miss_element')
-async def miss_element(callback_query: types.CallbackQuery):
-    """
-    In user mind element is missing. Bot offer a help
-
-    Button: miss element
-    """
-    await create_log(callback_query.message, "miss element")
-
+@create_pil_handler_router.callback_query(F.data == "miss_element")
+async def miss_element(callback: types.CallbackQuery):
+    await create_log(callback.message, "miss element")
+    
     is_work_time = get_work_time()
+    contact_id = callback.message.chat.id
+
+    async with await connect(
+        host=config.HOST,
+        user=config.USER,
+        password=config.PASSWORD,
+        database=config.DB
+    ) as db_connector:
+        async with db_connector.cursor() as db_cursor:
+            await db_cursor.execute(
+                "SELECT request_id FROM requests WHERE contact_id = %s ORDER BY request_id DESC LIMIT 1",
+                (contact_id,)
+            )
+            
+            pil_id = await db_cursor.fetchone()
+            if pil_id is None:
+                return
+            
+            await db_cursor.execute(
+                "INSERT INTO messages(direct, message, contact_id, pil_id) VALUES (%s, %s, %s, %s)",
+                ('designer', 'Зайві деталі на зображені', contact_id, pil_id[0])
+            )
+            await db_connector.commit()
 
     inline_buttons = types.InlineKeyboardMarkup(
         inline_keyboard=[
@@ -243,49 +250,21 @@ async def miss_element(callback_query: types.CallbackQuery):
         ]
     )
 
-    if is_work_time:
-        await callback_query.message.answer(
-            """😊 Ого, на щастя не все захопив ще Штучний разум!
-Я вже передаю нашому дизайнеру, щоб він подивився на ваше фото 👀. Він вирішить, чи зможе прибрати зайве. ✍️🎨""",
-            reply_markup=inline_buttons
+    message_text = (
+        "😊 Ого, на щастя не все захопив ще Штучний разум!\n"
+        "Я вже передаю нашому дизайнеру, щоб він подивився на ваше фото 👀. "
+        "Він вирішить, чи зможе прибрати зайве. ✍️🎨"
+    )
+    
+    if not is_work_time:
+        message_text += (
+            "\nНаш дизайнер зараз відпочиває. "
+            "Ми працюємо з понеділка по п'ятницю з 9 до 18, "
+            "а також у суботу з 10 до 14. "
+            "Відповість зразу, як буде можливість."
         )
-    else:
-        await callback_query.message.answer(
-            """😊 Ого, на щастя не все захопив ще Штучний разум!
-Я передам нашому дизайнеру, щоб він подивився на ваше фото 👀. Він вирішить, чи зможе прибрати зайве.
-Наш дизайнер зараз відпочиває. Ми працюємо з понеділка по п'ятницю з 9 до 18, а також у суботу з 10 до 14. Відповість зразу, як буде можливість. ✍️🎨""",
-            reply_markup=inline_buttons
-        )
 
-
-    contact_id = callback_query.message.chat.id
-
-    async with await connect(host=config.HOST, user=config.USER, password=config.PASSWORD, database=config.DB) as db_connector:
-        async with await db_connector.cursor() as db_cursor:
-            await db_cursor.execute("SELECT request_id FROM requests WHERE contact_id = %s ORDER BY request_id DESC LIMIT 1;",
-                (
-                    contact_id,
-                )
-            )
-            
-            pil_id=await db_cursor.fetchone()
-            if pil_id!=None:
-                pil_id=pil_id[0]
-            else:
-                return
-            
-
-            await db_cursor.execute("INSERT INTO messages(direct, message, contact_id, pil_id) VALUES (%s, %s, %s, %s)",
-                (
-                    'designer',
-                    'Зайві деталі на зображені',
-                    contact_id,
-                    pil_id
-                )
-            )
-        await db_connector.commit()
-
-
+    await callback.message.answer(message_text, reply_markup=inline_buttons)
 
 @create_pil_handler_router.callback_query(F.data == 'other')
 async def other(callback_query: types.CallbackQuery):
