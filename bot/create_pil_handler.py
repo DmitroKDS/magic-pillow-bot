@@ -135,11 +135,8 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
     await create_log(message, f"create pil operation {idx}")
 
     contact_id = message.chat.id
-
-    pillow_image_io = image_io
-    image_format="png"
     
-    got_img = Image.open(pillow_image_io)
+    got_img = Image.open(image_io)
     logging.info("Opened image")
 
     await process_image_in_chunks(got_img, (300, 300))
@@ -151,30 +148,18 @@ async def create_pil_operation(image_io, message: types.Message, state: FSMConte
 
     await create_log(message, "got img saved")
 
+    # Call bg_remove with the full URL
     result = await bg_remove(got_img, f"http://3059103.as563747.web.hosting-test.net/{got_img_path}")
-    logging.info("Background removed")
 
-    no_bg_img, no_bg_img_path = result[0]
-    pil_effect_img, pil_effect_img_path = result[1]
-
-    await asyncio.to_thread(no_bg_img.save, no_bg_img_path)
-    logging.info(f"Saved no_bg_img to {no_bg_img_path}")
-
-    await create_log(message, "no bg img saved")
-
-    await asyncio.to_thread(pil_effect_img.save, pil_effect_img_path)
-
-    await create_log(message, "pil effect img saved")
-
-
-    preview_img = await asyncio.to_thread( thumbnail, pil_effect_img, (600, 600) )
+    # Create preview
+    pil_effect_img = result[1][0]  # Get the pil_effect image from the result
+    preview_img = await asyncio.to_thread(thumbnail, pil_effect_img, (600, 600))
 
     preview_img_bytes = io.BytesIO()
     await asyncio.to_thread(preview_img.save, preview_img_bytes, format='PNG')
     preview_img_bytes.seek(0)
 
     return preview_img_bytes
-
 async def send_processed_image(message: types.Message, preview_img_bytes: io.BytesIO):
     await message.answer_photo(
         types.BufferedInputFile(
